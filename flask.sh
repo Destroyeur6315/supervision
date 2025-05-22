@@ -22,6 +22,8 @@ opentelemetry-sdk
 opentelemetry-exporter-jaeger
 opentelemetry.instrumentation
 opentelemetry.instrumentation.logging
+opentelemetry-instrumentation-flask
+logging
 EOL
 
 # Installer les dépendances
@@ -29,84 +31,70 @@ pip install -r requirements.txt
 
 # Créer un fichier app.py avec un peu de code
 cat <<EOF > app.py
-import time # Module pour gérer le temps, notamment pour simuler des
-# Importer les modules OpenTelemetry nécessaires
-from opentelemetry import trace # Pour créer et gérer les traces
-from opentelemetry.sdk.resources import SERVICE_NAME, Resource # Pour définir le nom du service
-from opentelemetry.sdk.trace import TracerProvider # Fournisseur de trace
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor # Pour exporter les spans
-from opentelemetry.exporter.jaeger.thrift import JaegerExporter # Exporteur
+from flask import Flask, request
+from app_log import setup_syslog_logger
 
-# Configuration du fournisseur de trace avec le nom du service
+from opentelemetry import trace
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+
+# === Configure OpenTelemetry ===
 trace.set_tracer_provider(
-    TracerProvider(resource=Resource.create({SERVICE_NAME:
-        "hello-trace-app"})) # Nom visible dans Jaeger
+    TracerProvider(
+        resource=Resource.create({SERVICE_NAME: "flask-syslog-app"})
+    )
 )
-# Création d’un tracer spécifique à ce module
-tracer = trace.get_tracer(__name__)
-# Configuration de l'exporteur Jaeger (vers l'agent Jaeger local sur le port 6831)
 jaeger_exporter = JaegerExporter(
-    agent_host_name="localhost", # Adresse de Jaeger (localhost ici)
-    agent_port=6831, # Port UDP par défaut utilisé par Jaeger
+    agent_host_name="localhost",  # ou l'IP de ta VM si externe
+    agent_port=6831,
 )
-# Ajout d’un processeur de spans pour envoyer immédiatement les traces à
 trace.get_tracer_provider().add_span_processor(
-    SimpleSpanProcessor(jaeger_exporter) # Envoie les traces une par une dès
+    BatchSpanProcessor(jaeger_exporter)
 )
-# Exemple de création d’un span (bloc de code mesuré dans la trace)
-with tracer.start_as_current_span("say_hello") as span:
-    print("Hello depuis OpenTelemetry + Python") # Affichage console
-    span.set_attribute("exemple.key", "valeur") # Ajout d’un attribut à la
-    span.add_event("Lancement de l'opération") # Ajout d’un événement dans
-    time.sleep(1) # Pause pour simuler une opération d’une seconde
-# ⏱ Pause supplémentaire pour s'assurer que l’exporteur a le temps d’envoyer
+tracer = trace.get_tracer(__name__)
 
-time.sleep(2)
+# === Flask App ===
+app = Flask(__name__)
+FlaskInstrumentor().instrument_app(app)
+
+# === Syslog Logger ===
+logger = setup_syslog_logger()
+
+@app.route("/")
+def index():
+    logger.info("Requête reçue sur /")
+    with tracer.start_as_current_span("index-span"):
+        return "Bonjour depuis Flask avec OpenTelemetry + Syslog !"
+
+@app.route("/test")
+def test():
+    logger.info("Requête reçue sur /test")
+    with tracer.start_as_current_span("test-span"):
+        return "Route test OK"
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
 EOF
 
 # Créer un fichier app.py avec un peu de code
 cat <<EOF > app_log.py
-import time # Pour simuler le temps de traitement
-import logging # Pour la journalisation (logs)
-# Import des modules OpenTelemetry
-from opentelemetry import trace
-from opentelemetry.sdk.resources import SERVICE_NAME, Resource # Pour nommer
-from opentelemetry.sdk.trace import TracerProvider # Fournisseur de trace
-from opentelemetry.sdk.trace.export import BatchSpanProcessor # Pour
-from opentelemetry.exporter.jaeger.thrift import JaegerExporter # Exporteur
-from opentelemetry.instrumentation.logging import LoggingInstrumentor #
+# logging_syslog.conf
+import logging
+import logging.handlers
 
-# Configuration de la journalisation standard Python
-logging.basicConfig(level=logging.INFO) # Niveau d'affichage : INFO ou
-logger = logging.getLogger(__name__) # Création d’un logger pour ce module
-# 🔌 Instrumentation : lie les logs aux traces OpenTelemetry (trace_id,
+def setup_syslog_logger():
+    logger = logging.getLogger("flaskapp")
+    logger.setLevel(logging.INFO)
 
-LoggingInstrumentor().instrument(set_logging_format=True)
-# Configuration du fournisseur de trace avec nom du service
-trace.set_tracer_provider(
-    TracerProvider(
-    resource=Resource.create({SERVICE_NAME: "otel-log-demo"}) # Nom du
-)
-)
-# Création d’un tracer
-tracer = trace.get_tracer(__name__)
-# Configuration d’un processeur de spans par lot avec export vers Jaeger
-trace.get_tracer_provider().add_span_processor(
-    BatchSpanProcessor( # Envoie les traces de manière groupée (plus
-        JaegerExporter(
-            agent_host_name="localhost", # Adresse de l'agent Jaeger local
-            agent_port=6831, # Port par défaut
-        )
-    )
-)
-# Début d’une trace nommée "traitement"
-with tracer.start_as_current_span("traitement") as span:
-    logger.info(" Début du traitement") # Log d'information, lié au trace_id
-    span.set_attribute("traitement.status", "démarrage") # Ajout d’attributs
-    time.sleep(1) # Pause pour simuler un traitement
-    logger.warning(" Une étape a pris un peu de temps") # Log
-    time.sleep(1) # Autre pause
-    logger.info(" Traitement terminé") # Log final
+    handler = logging.handlers.SysLogHandler(address='/dev/log')  # pour Ubuntu/Debian
+    formatter = logging.Formatter('%(asctime)s flaskapp: %(message)s')
+    handler.setFormatter(formatter)
+
+    logger.addHandler(handler)
+    return logger
 EOF
 
 echo "✅ Projet Python initialisé dans le dossier '$PROJECT_NAME'"
