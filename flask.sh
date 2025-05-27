@@ -8,7 +8,7 @@ mkdir "$PROJECT_NAME"
 cd "$PROJECT_NAME" || exit
 
 # Créer un environnement virtuel
-python3 -m venv venv
+python -m venv venv
 
 # Activer l’environnement virtuel
 # (Note : cela ne fonctionne que dans une session interactive, mais requis pour les installations)
